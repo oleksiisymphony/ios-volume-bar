@@ -1,6 +1,9 @@
 const DEFAULT_SRC = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
 const video = document.getElementById("video");
 video.crossOrigin = "anonymous"; // needed for createMediaElementSource with cross-origin streams
+// Force native media element to be muted so only WebAudio / audioFallback is used for audible output
+video.muted = true;
+video.defaultMuted = true;
 
 // Allow overriding video source via ?src=<url> — fallback to DEFAULT_SRC
 const params = new URLSearchParams(window.location.search);
@@ -121,27 +124,37 @@ function attachVolDiagnostics() {
 attachVolDiagnostics();
 
 // Test helpers
-setVolBtn && setVolBtn.addEventListener('click', () => {
+  setVolBtn && setVolBtn.addEventListener('click', () => {
   volInput.value = '0.2';
   // dispatch input event so listeners react the same way as user gesture
   volInput.dispatchEvent(new Event('input', { bubbles: true }));
-  // Also explicitly apply to the active mechanism so we can observe results immediately
-  if (gain && gain.gain) {
-    gain.gain.value = 0.2;
-    console.log('Test helper applied gain.gain.value = 0.2');
-  } else {
-    video.volume = 0.2;
-    console.log('Test helper applied video.volume = 0.2');
-  }
-  updateDiagnostics(gain && gain.gain ? gain.gain.value : null);
-  setStatus('Test: set volume slider to 0.2');
+    // Also explicitly apply to the active mechanism so we can observe results immediately
+    if (gain && gain.gain) {
+      gain.gain.value = 0.2;
+      console.log('Test helper applied gain.gain.value = 0.2');
+    } else if (audioFallback) {
+      audioFallback.volume = 0.2;
+      console.log('Test helper applied audioFallback.volume = 0.2');
+    } else {
+      // Native video volume will be set but native audio is intentionally forced muted
+      video.volume = 0.2;
+      console.log('Test helper applied video.volume = 0.2 (native audio is forced muted)');
+    }
+    updateDiagnostics(gain && gain.gain ? gain.gain.value : null);
+    setStatus('Test: set volume slider to 0.2');
 });
 
-toggleMuteBtn && toggleMuteBtn.addEventListener('click', () => {
-  video.muted = !video.muted;
-  setStatus(`Test: toggled video.muted -> ${video.muted}`);
-  updateDiagnostics(null);
-});
+  toggleMuteBtn && toggleMuteBtn.addEventListener('click', () => {
+    if (audioFallback) {
+      audioFallback.muted = !audioFallback.muted;
+      setStatus(`Test: toggled audioFallback.muted -> ${audioFallback.muted}`);
+    } else {
+      // Native is forced muted; indicate that to the user
+      setStatus('Native video audio is forced muted; no audio fallback to toggle');
+      console.warn('toggleMuteBtn pressed but no audioFallback present; native audio is forced muted');
+    }
+    updateDiagnostics(null);
+  });
 
 // User gesture required on iOS to unlock audio — bind to the Play button
 playBtn.addEventListener("click", async () => {
@@ -183,7 +196,7 @@ playBtn.addEventListener("click", async () => {
       });
 
       usingWebAudio = true;
-      setStatus('WebAudio routing established for video');
+      setStatus('WebAudio routing established for video (native audio forced muted)');
     } else {
       setStatus('forceAudioFallback active — skipping video WebAudio routing');
       throw new Error('forceAudioFallback');
@@ -237,7 +250,7 @@ playBtn.addEventListener("click", async () => {
         const p = audioFallback.play();
         console.log('audioFallback.play() returned', p);
         await p;
-        setStatus('Playing audio fallback (video muted)');
+        setStatus('Playing audio fallback (native video forced muted)');
       } catch (audioPlayErr) {
         console.error('Audio fallback play failed', audioPlayErr);
         setStatus('Audio fallback play failed');
@@ -259,7 +272,7 @@ playBtn.addEventListener("click", async () => {
     const p = video.play();
     console.log('video.play() returned', p);
     await p;
-    if (usingWebAudio) setStatus('Playing with WebAudio routing');
+    if (usingWebAudio) setStatus('Playing with WebAudio routing (native audio forced muted)');
     else if (audioFallback) setStatus('Playing with audio element fallback (video muted)');
     else setStatus('Playing with native element volume control');
   } catch (playErr) {

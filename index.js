@@ -1,5 +1,6 @@
 const video = document.getElementById("video");
 video.src = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
+video.volume = 1;
 
 // Must be triggered by user interaction on iOS
 document.body.addEventListener("click", async () => {
@@ -14,5 +15,8 @@ document.body.addEventListener("click", async () => {
     gain.gain.value = e.target.value;
   });
 
+
+  await ctx.resume();
+  video.muted = false;
   await video.play();
 }, { once: true });

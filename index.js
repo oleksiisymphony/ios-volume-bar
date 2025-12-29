@@ -8,6 +8,7 @@ const srcParam = params.get('src');
 const src = srcParam ? decodeURIComponent(srcParam) : DEFAULT_SRC;
 video.src = src;
 video.volume = 1;
+video.muted = true;
 console.log(`Using video src: ${src}`);
 console.log('URL params:', { srcParam, forceAudioFallback: params.get('forceAudioFallback') });
 // Log media capability hints
@@ -88,20 +89,36 @@ function updateDiagnostics(currentGain) {
 }
 
 // Global diagnostic listener: always log slider events and current values
-volInput.addEventListener('input', e => {
-  const v = Number(e.target.value);
-  console.log('slider input fired ->', v, { timestamp: Date.now() });
-
-  // If a WebAudio gain is present, show the intended gain and timestamp
-  if (gain && gain.gain) {
-    console.log('slider -> setting gain.gain.value (intended):', v, 'currentGain:', gain.gain.value);
-  } else {
-    console.log('slider -> no WebAudio gain present; intended video.volume:', v, 'currentVideoVolume:', video.volume);
+// Attach broad listeners to the volume input for diagnostics (covers input, change, pointer, touch)
+function attachVolDiagnostics() {
+  if (!volInput) {
+    console.warn('volInput not present to attach listeners');
+    return;
   }
 
-  // show the intended video.volume value as well (helpful when fallback is used)
-  updateDiagnostics(null);
-});
+  const logEvent = (name, e) => {
+    try {
+      const value = e && e.target && typeof e.target.value !== 'undefined' ? Number(e.target.value) : video.volume;
+      console.log(`vol event: ${name}`, { time: Date.now(), value, type: e && e.type });
+      // If WebAudio gain is present, log current gain too
+      if (gain && gain.gain) console.log('  current gain.gain.value =', gain.gain.value);
+      else console.log('  current video.volume =', video.volume);
+    } catch (err) {
+      console.warn('vol event logging failed', err);
+    }
+  };
+
+  // Remove any existing diagnostic listeners to avoid duplication
+  ['input','change','pointerdown','pointermove','pointerup','touchstart','touchmove','touchend','mousedown','mouseup'].forEach(ev => {
+    volInput.removeEventListener(ev, logEvent);
+    volInput.addEventListener(ev, logEvent);
+  });
+
+  console.log('Attached diagnostic listeners to volInput for input/change/pointer/touch events');
+  setStatus('vol input diagnostics attached');
+}
+
+attachVolDiagnostics();
 
 // Test helpers
 setVolBtn && setVolBtn.addEventListener('click', () => {

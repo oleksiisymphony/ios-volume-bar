@@ -1,5 +1,5 @@
 const video = document.getElementById("video");
-video.src = "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8";
+video.src = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
 
 // Must be triggered by user interaction on iOS
 document.body.addEventListener("click", async () => {

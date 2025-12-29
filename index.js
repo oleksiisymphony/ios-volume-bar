@@ -4,6 +4,7 @@ video.crossOrigin = "anonymous"; // needed for createMediaElementSource with cro
 // Force native media element to be muted so only WebAudio / audioFallback is used for audible output
 video.muted = true;
 video.defaultMuted = true;
+console.log('Native video element forced muted to ensure WebAudio/audioFallback is used for audible output');
 
 // Allow overriding video source via ?src=<url> — fallback to DEFAULT_SRC
 const params = new URLSearchParams(window.location.search);
@@ -39,135 +40,168 @@ const toggleMuteBtn = document.getElementById('toggleMuteBtn');
 let ctx = null;
 let gain = null;
 let audioFallback = null;
+let wired = false; // true when createMediaElementSource has been successfully created (and only once)
+let usingWebAudio = false;
 
-// Helper: log video/audio state snapshot
-function logMediaSnapshot(prefix = '') {
+playBtn.addEventListener("click", async () => {
+  setStatus('user Play pressed — ensuring wiring before playback');
+  // Ensure wiring; if WebAudio wiring fails we will fall back to audioFallback below
   try {
-    console.log(prefix, {
-      time: new Date().toISOString(),
-      videoSrc: video.currentSrc || video.src,
-      videoPaused: video.paused,
-      videoMuted: video.muted,
-      videoVolume: video.volume,
-      videoReadyState: video.readyState,
-      videoCurrentTime: video.currentTime,
-      audioFallbackPresent: !!audioFallback,
-      audioFallbackPaused: audioFallback ? audioFallback.paused : undefined,
-      audioFallbackCurrentTime: audioFallback ? audioFallback.currentTime : undefined,
-      audioContextState: ctx ? ctx.state : undefined,
-      gainValue: gain ? (gain.gain && gain.gain.value) : undefined,
-    });
+    await ensureWiredToWebAudio();
   } catch (err) {
-    console.warn('logMediaSnapshot failed', err);
+    console.warn('ensureWiredToWebAudio failed; will try audio-element fallback', err);
   }
-}
 
-// Attach event listeners to the video element to capture runtime behavior
-['play','playing','pause','volumechange','loadedmetadata','canplay','canplaythrough','waiting','stalled','error','suspend','emptied'].forEach(ev => {
-  video.addEventListener(ev, e => {
-    console.log(`video event: ${ev}`, {
-      event: e.type,
-      time: Date.now(),
-      paused: video.paused,
-      muted: video.muted,
-      volume: video.volume,
-      readyState: video.readyState,
-      currentTime: video.currentTime,
-    });
-    logMediaSnapshot(`video event ${ev}`);
-  });
+  // Try to play the video (video is intentionally muted; audio will come from WebAudio if available)
+  try {
+    const p = video.play();
+    console.log('video.play() returned', p);
+    await p;
+    if (usingWebAudio) setStatus('Playing with WebAudio routing (native audio forced muted)');
+    else if (audioFallback) setStatus('Playing with audio element fallback (native video forced muted)');
+    else setStatus('Playing with native element volume control');
+  } catch (playErr) {
+    console.error('Play failed after wiring attempt:', playErr);
+    setStatus('Play failed — see console for details');
+  }
+
+  // Add a periodic diagnostic log to help debug iOS behavior
+  setInterval(() => {
+    logMediaSnapshot('periodic diagnostic');
+    if (ctx) console.log('AudioContext periodic state:', { state: ctx.state, sampleRate: ctx.sampleRate });
+  }, 3000);
+
+}, { once: true });
+
+// If the user manages to call the video's native play (e.g., via controls or other), ensure we wire first
+video.addEventListener('play', async (e) => {
+  if (wired) return; // already wired
+  console.warn('video play event fired before WebAudio wiring — pausing to wire and prevent native audio route lock');
+  try {
+    video.pause();
+  } catch (_) {}
+  setStatus('Detected native play before wiring — pausing and setting up WebAudio');
+  try {
+    await ensureWiredToWebAudio();
+    // after wiring, attempt play again (muted video; audio should come from WebAudio)
+    await video.play();
+    setStatus('Playback resumed after wiring');
+  } catch (err) {
+    console.error('Failed to wire on video.play:', err);
+    setStatus('Failed to wire on video.play — see console');
+  }
 });
 
-// Force the audio-element fallback via ?forceAudioFallback=1 when testing
-const forceAudioFallback = params.get('forceAudioFallback') === '1';
-
-function setStatus(msg) {
-  console.log(msg);
-  if (statusText) statusText.textContent = msg;
-}
-
-function updateDiagnostics(currentGain) {
-  if (gainDisplay) gainDisplay.textContent = (currentGain == null ? '-' : String(currentGain));
-  if (videoVolDisplay) videoVolDisplay.textContent = String(video.volume);
-}
-
-// Global diagnostic listener: always log slider events and current values
-// Attach broad listeners to the volume input for diagnostics (covers input, change, pointer, touch)
-function attachVolDiagnostics() {
-  if (!volInput) {
-    console.warn('volInput not present to attach listeners');
+// Centralize wiring logic so createMediaElementSource is always created BEFORE any native playback and only once
+async function ensureWiredToWebAudio() {
+  if (wired) {
+    console.log('ensureWiredToWebAudio: already wired');
     return;
   }
 
-  const logEvent = (name, e) => {
-    try {
-      const value = e && e.target && typeof e.target.value !== 'undefined' ? Number(e.target.value) : video.volume;
-      console.log(`vol event: ${name}`, { time: Date.now(), value, type: e && e.type });
-      // If WebAudio gain is present, log current gain too
-      if (gain && gain.gain) console.log('  current gain.gain.value =', gain.gain.value);
-      else console.log('  current video.volume =', video.volume);
-    } catch (err) {
-      console.warn('vol event logging failed', err);
-    }
-  };
-
-  // Remove any existing diagnostic listeners to avoid duplication
-  ['input','change','pointerdown','pointermove','pointerup','touchstart','touchmove','touchend','mousedown','mouseup'].forEach(ev => {
-    volInput.removeEventListener(ev, logEvent);
-    volInput.addEventListener(ev, logEvent);
-  });
-
-  console.log('Attached diagnostic listeners to volInput for input/change/pointer/touch events');
-  setStatus('vol input diagnostics attached');
-}
-
-attachVolDiagnostics();
-
-// Test helpers
-  setVolBtn && setVolBtn.addEventListener('click', () => {
-  volInput.value = '0.2';
-  // dispatch input event so listeners react the same way as user gesture
-  volInput.dispatchEvent(new Event('input', { bubbles: true }));
-    // Also explicitly apply to the active mechanism so we can observe results immediately
-    if (gain && gain.gain) {
-      gain.gain.value = 0.2;
-      console.log('Test helper applied gain.gain.value = 0.2');
-    } else if (audioFallback) {
-      audioFallback.volume = 0.2;
-      console.log('Test helper applied audioFallback.volume = 0.2');
-    } else {
-      // Native video volume will be set but native audio is intentionally forced muted
-      video.volume = 0.2;
-      console.log('Test helper applied video.volume = 0.2 (native audio is forced muted)');
-    }
-    updateDiagnostics(gain && gain.gain ? gain.gain.value : null);
-    setStatus('Test: set volume slider to 0.2');
-});
-
-  toggleMuteBtn && toggleMuteBtn.addEventListener('click', () => {
-    if (audioFallback) {
-      audioFallback.muted = !audioFallback.muted;
-      setStatus(`Test: toggled audioFallback.muted -> ${audioFallback.muted}`);
-    } else {
-      // Native is forced muted; indicate that to the user
-      setStatus('Native video audio is forced muted; no audio fallback to toggle');
-      console.warn('toggleMuteBtn pressed but no audioFallback present; native audio is forced muted');
-    }
-    updateDiagnostics(null);
-  });
-
-// User gesture required on iOS to unlock audio — bind to the Play button
-playBtn.addEventListener("click", async () => {
-  let ctx;
-  let gain;
-  let usingWebAudio = false;
-  let audioFallback = null; // optional hidden audio element fallback
-
-  setStatus('attempting audio unlock and WebAudio routing');
-
+  setStatus('ensuring WebAudio wiring (create AudioContext + MediaElementSource)');
   try {
-    // reuse global ctx when present
     ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+    console.log('AudioContext created/resumed in ensureWiredToWebAudio', { state: ctx.state, sampleRate: ctx.sampleRate });
+    await ctx.resume();
+    console.log('AudioContext after resume', { state: ctx.state });
+
+    if (forceAudioFallback) {
+      console.log('forceAudioFallback requested — skipping video createMediaElementSource');
+      throw new Error('forceAudioFallback');
+    }
+
+    // Create the MediaElementSource before any playback
+    let source;
+    try {
+      source = ctx.createMediaElementSource(video);
+      gain = ctx.createGain();
+      source.connect(gain).connect(ctx.destination);
+      console.log('createMediaElementSource succeeded in ensureWiredToWebAudio');
+    } catch (createErr) {
+      console.warn('createMediaElementSource failed in ensureWiredToWebAudio', createErr);
+      throw createErr;
+    }
+
+    // Hook up UI to control gain if present
+    volInput.addEventListener("input", e => {
+      const v = Number(e.target.value);
+      if (gain && gain.gain) {
+        gain.gain.value = v;
+        console.log('WebAudio gain set ->', v, { timestamp: Date.now() });
+        setStatus(`WebAudio gain: ${gain.gain.value}`);
+        updateDiagnostics(gain.gain.value);
+      }
+    });
+
+    wired = true;
+    usingWebAudio = true;
+    setStatus('WebAudio routing established for video (native audio forced muted)');
+    logMediaSnapshot('wired');
+  } catch (err) {
+    // If wiring failed, attempt the audio-element fallback as before
+    console.warn('Wiring failed; attempting audioFallback in ensureWiredToWebAudio', err);
+    setStatus('video WebAudio failed; trying audio-element fallback');
+
+    try {
+      audioFallback = document.createElement('audio');
+      audioFallback.crossOrigin = 'anonymous';
+      audioFallback.src = src;
+      audioFallback.preload = 'auto';
+      audioFallback.style.display = 'none';
+      audioFallback.playsInline = true;
+      document.body.appendChild(audioFallback);
+
+      ['play','playing','pause','volumechange','error','timeupdate','loadedmetadata','canplay'].forEach(ev => {
+        audioFallback.addEventListener(ev, e => {
+          console.log(`audioFallback event: ${ev}`, {
+            event: e.type,
+            paused: audioFallback.paused,
+            currentTime: audioFallback.currentTime,
+            volume: audioFallback.volume,
+          });
+          logMediaSnapshot(`audioFallback event ${ev}`);
+        });
+      });
+
+      ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+      await ctx.resume();
+      const aSource = ctx.createMediaElementSource(audioFallback);
+      gain = ctx.createGain();
+      aSource.connect(gain).connect(ctx.destination);
+
+      volInput.addEventListener("input", e => {
+        const v = Number(e.target.value);
+        gain.gain.value = v;
+        setStatus(`Audio fallback gain: ${gain.gain.value}`);
+        updateDiagnostics(gain.gain.value);
+      });
+
+      // Keep native video muted; play the audio fallback
+      video.muted = true;
+      try {
+        const p = audioFallback.play();
+        console.log('audioFallback.play() returned', p);
+        await p;
+        setStatus('Playing audio fallback (native video forced muted)');
+        wired = true; // consider wired if fallback is in use
+      } catch (audioPlayErr) {
+        console.error('Audio fallback play failed in ensureWiredToWebAudio', audioPlayErr);
+        setStatus('Audio fallback play failed');
+        throw audioPlayErr;
+      }
+    } catch (audioErr) {
+      console.warn('Audio-element fallback failed in ensureWiredToWebAudio, falling back to element.volume control', audioErr);
+      setStatus('Fallback to native element.volume control');
+      volInput.addEventListener("input", e => {
+        video.volume = Number(e.target.value);
+        setStatus(`video.volume set: ${video.volume}`);
+        updateDiagnostics(null);
+      });
+      throw audioErr;
+    }
+  }
+}
     console.log('AudioContext created', { state: ctx.state, sampleRate: ctx.sampleRate, baseLatency: ctx.baseLatency });
     // Wait for user gesture to resume the context
     await ctx.resume();

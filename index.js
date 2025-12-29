@@ -254,7 +254,7 @@ playBtn.addEventListener("click", async () => {
   }
 
   // Ensure the element is unmuted (unless audioFallback is used) and play video
-  if (!audioFallback) video.muted = false;
+//   if (!audioFallback) video.muted = false;
   try {
     const p = video.play();
     console.log('video.play() returned', p);
